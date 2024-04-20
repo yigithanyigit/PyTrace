@@ -13,6 +13,7 @@ from lib.procedural import Procedural
 from lib.renderEvent import RenderEvent, RenderEventHandler
 from lib.camera import Camera
 from lib.renderThread import render_task, render_task_wrapper
+from lib.argumentParser import ArgumentParser
 
 os.environ["QT_MAC_WANTS_LAYER"] = "1"
 
@@ -178,8 +179,11 @@ if __name__ == "__main__":
     qApp.setApplicationName("PyTrace")
     print("PyTrace is starting...")
 
+    # setup parser
+    parser = ArgumentParser(sys.argv)
+
     # setup a scene
-    sceneParser = SceneParser(SCENE_FILE)
+    sceneParser = SceneParser(parser.args.scene)
     sceneParser.parseScene()
     scene = Scene()
     camera = Camera(
@@ -188,18 +192,22 @@ if __name__ == "__main__":
         sceneParser.camera["posZ"],
         sceneParser.camera["focalLength"],
     )
-    for obj in sceneParser.procedural.objects:
-        scene.addNode(obj)
 
-    for obj in sceneParser.objects:
-        scene.addNode(obj)
+    if sceneParser.procedural is not None:
+        for obj in sceneParser.procedural.objects:
+            scene.addNode(obj)
 
-    for obj in sceneParser.lights:
-        scene.addNode(obj)
+    if sceneParser.objects is not None:
+        for obj in sceneParser.objects:
+            scene.addNode(obj)
+
+    if sceneParser.lights is not None:
+        for obj in sceneParser.lights:
+            scene.addNode(obj)
 
     # setup main ui
-    width = 900
-    height = 900
+    width = parser.args.width
+    height = parser.args.height
     mainWindow = PyTraceMainWindow(qApp, width, height, scene, camera)
     mainWindow.setupUi()
     mainWindow.show()

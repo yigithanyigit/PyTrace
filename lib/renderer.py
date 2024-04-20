@@ -97,5 +97,7 @@ class RendererWidget(QWidget):
                 dot = Vector3f.dot(normal, light_dir)
                 if dot > 0:
                     color = Vector3f(min(255, color.x + dot * _closest_object[5]), min(255, color.y + dot * _closest_object[6]), min(255, color.z + dot * _closest_object[7]))
+        else:
+            color = Vector3f(min(255, color.x + _closest_object[5]), min(255, color.y + _closest_object[6]), min(255, color.z + _closest_object[7]))
         #return Vector3f(min(255, color.x + _closest_object[5]), min(255, color.y + _closest_object[6]), min(255, color.z + _closest_object[7]))
         return color
