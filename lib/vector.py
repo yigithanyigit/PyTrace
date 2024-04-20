@@ -3,6 +3,9 @@
 # 240201040
 # May 2021
 
+# Vector2f added by Yigithan Yigit
+# 2024 03 03
+
 from math import pi, sin, cos, sqrt, acos
 
 __all__ = ['HCoord', 'Vector3f', 'Point3f', 'ColorRGBA']
@@ -111,6 +114,12 @@ class Point3f(HCoord):
                        self.y + other.y, \
                        self.z + other.z)
 
+
+class Vector2f(HCoord):
+    def __init__(self, x, y):
+        HCoord.__init__(self, x, y, 0, 0)
+        self.x = self.x
+        self.y = self.y
 
 class ColorRGBA(HCoord):
     def __init__(self, r, g, b, a):

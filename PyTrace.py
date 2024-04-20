@@ -1,131 +1,220 @@
 import sys
 import random
 import time
+import os
+from multiprocessing import Pool
+import cProfile
+from cProfile import Profile
+
+from lib.renderer import RendererWidget
+from lib.sceneParser import SceneParser
+from lib.scene import Scene
+from lib.procedural import Procedural
+from lib.renderEvent import RenderEvent, RenderEventHandler
+from lib.camera import Camera
+from lib.renderThread import render_task, render_task_wrapper
+
+os.environ["QT_MAC_WANTS_LAYER"] = "1"
+
+SCENE_FILE = "scene_procedural.json"
 
 from PySide2.QtCore import *
 from PySide2.QtGui import *
 from PySide2.QtWidgets import *
-
-
-class PaintWidget(QWidget):
-	def __init__(self, width, height, parent=None):
-		super(PaintWidget, self).__init__(parent=parent)
-		self.width = width
-		self.height = height
-
-		# setup an image buffer
-		self.imgBuffer = QImage(self.width, self.height, QImage.Format_ARGB32_Premultiplied)
-		self.imgBuffer.fill(QColor(0, 0, 0))
-
-
-	def paintEvent(self, event):
-		painter = QPainter(self)
-		painter.setCompositionMode(QPainter.CompositionMode_Source)
-		painter.drawImage(0, 0, self.imgBuffer)
-
-
-	def sizeHint(self):
-		return QSize(self.width, self.height)
+import time
 
 
 class PyTraceMainWindow(QMainWindow):
-	def __init__(self, qApp, width, height):
-		super(PyTraceMainWindow, self).__init__()
+    def __init__(self, qApp, width, height, scene, camera):
+        super(PyTraceMainWindow, self).__init__()
 
-		self.qApp = qApp
-		self.width = width
-		self.height = height
-		self.gfxScene = QGraphicsScene()
+        self.qApp = qApp
+        self.width = width
+        self.height = height
+        self.gfxScene = QGraphicsScene()
+        self.definedScene = scene
+        self.camera = camera
+        self.cumulativeTime = 0.0
 
+    def setupUi(self):
+        if not self.objectName():
+            self.setObjectName("PyTrace")
+            self.resize(self.width + int(25), self.height + int(25))
+            self.setWindowTitle("CENG488 PyTrace")
+            self.setStyleSheet("background-color:black;")
+            self.setAutoFillBackground(True)
 
-	def setupUi(self):
-		if not self.objectName():
-			self.setObjectName(u"PyTrace")
-		self.resize(self.width + 25, self.height + 25)
-		self.setWindowTitle("CENG488 PyTrace")
-		self.setStyleSheet("background-color:black;")
-		self.setAutoFillBackground(True)
+        # set centralWidget
+        self.centralWidget = QWidget(self)
+        self.centralWidget.setObjectName("CentralWidget")
 
-		# set centralWidget
-		self.centralWidget = QWidget(self)
-		self.centralWidget.setObjectName(u"CentralWidget")
+        # create a layout to hold widgets
+        self.horizontalLayout = QHBoxLayout(self.centralWidget)
+        self.horizontalLayout.setObjectName("horizontalLayout")
+        self.horizontalLayout.setContentsMargins(0, 0, 0, 0)
 
-		# create a layout to hold widgets
-		self.horizontalLayout = QHBoxLayout(self.centralWidget)
-		self.horizontalLayout.setObjectName(u"horizontalLayout")
-		self.horizontalLayout.setContentsMargins(0, 0, 0, 0)
+        # setup the gfxScene
+        self.gfxScene.setItemIndexMethod(QGraphicsScene.NoIndex)
 
-		# setup the gfxScene
-		self.gfxScene.setItemIndexMethod(QGraphicsScene.NoIndex)
+        # create a paint widget
+        self.rendererWidget = RendererWidget(self.width, self.height)
+        self.rendererWidget.setGeometry(QRect(0, 0, self.width, self.height))
+        self.rendererWidgetItem = self.gfxScene.addWidget(self.rendererWidget)
+        self.rendererWidgetItem.setZValue(0)
 
-		# create a paint widget
-		self.paintWidget = PaintWidget(self.width, self.height)
-		self.paintWidget.setGeometry(QRect(0, 0, self.width, self.height))
-		self.paintWidgetItem = self.gfxScene.addWidget(self.paintWidget)
-		self.paintWidgetItem.setZValue(0)
+        # create a QGraphicsView as the main widget
+        self.gfxView = QGraphicsView(self.centralWidget)
+        self.gfxView.setObjectName("GraphicsView")
 
-		# create a QGraphicsView as the main widget
-		self.gfxView = QGraphicsView(self.centralWidget)
-		self.gfxView.setObjectName(u"GraphicsView")
+        # assign our scene to view
+        self.gfxView.setScene(self.gfxScene)
+        self.gfxView.setGeometry(QRect(0, 0, self.width, self.height))
 
-		# assign our scene to view
-		self.gfxView.setScene(self.gfxScene)
-		self.gfxView.setGeometry(QRect(0, 0, self.width, self.height))
+        # add widget to layout
+        self.horizontalLayout.addWidget(self.gfxView)
 
-		# add widget to layout
-		self.horizontalLayout.addWidget(self.gfxView)
+        # set central widget
+        self.setCentralWidget(self.centralWidget)
 
-		# set central widget
-		self.setCentralWidget(self.centralWidget)
+        # setup a status bar
+        self.statusBar = QStatusBar(self)
+        self.statusBar.setObjectName("StatusBar")
+        self.statusBar.setStyleSheet("background-color:gray;")
+        self.setStatusBar(self.statusBar)
+        self.statusBar.showMessage("Ready...")
 
-		# setup a status bar
-		self.statusBar = QStatusBar(self)
-		self.statusBar.setObjectName(u"StatusBar")
-		self.statusBar.setStyleSheet("background-color:gray;")
-		self.setStatusBar(self.statusBar)
-		self.statusBar.showMessage("Ready...")
+    def setStatusBarMessage(self, message):
+        self.statusBar.showMessage(message)
 
+    def timerBuffer(self):
+        """
+        print("Updating buffer...")
+        self.setStatusBarMessage("Rendering...")
 
-	def timerBuffer(self):
-		print("Updating buffer...")
-		randHue = random.random()
-		randCol = QColor.fromHslF(randHue, 1.0, 0.3)
+        self.threadPool = QThreadPool().globalInstance()
+        max_thread = os.cpu_count()
+        self.threadPool.setMaxThreadCount(max_thread)
+        height_per_thread = self.height // max_thread
 
-		# go through pixels
-		for y in range(0, height):
-			for x in range(0, width):
-				self.paintWidget.imgBuffer.setPixelColor(x, y, randCol)
+        for bucket in range(0, height_per_thread):
+            for i in range(0, max_thread):
+                y0 = bucket * max_thread + i
+                y1 = y0 + 1
+        """
+        """
+        for i in range(0, max_thread):
+            y0 = i * height_per_thread
+            y1 = y0 + height_per_thread
+            if i == max_thread - 1:
+                y1 = self.height
+            thread = RenderTask(self.rendererWidget, y0, y1, self.width, self.definedScene, camera, self.height)
+            thread.signal.finished.connect(self.updateBuffer)
+            self.threadPool.start(thread)
 
-			# update buffer
-			for z in range(0, 100000):
-				pass
-			self.updateBuffer()
-			# don't wait for the task to finish to update the view
-			qApp.processEvents()
+            while not self.threadPool.waitForDone(100): # This is a must for process the signals, otherwise the GUI will freeze
+                qApp.processEvents()
 
+        self.printCumulativeTime(self.cumulativeTime)
+        """
+        start = time.time()
+        max_thread = os.cpu_count()
+        height_per_thread = self.height // max_thread
+        camera_shared = [0, 0, 0, 0]
+        scene_shared = scene.getSharedArray()
+        camera_shared[0] = self.camera.posX
+        camera_shared[1] = self.camera.posY
+        camera_shared[2] = self.camera.posZ
+        camera_shared[3] = self.camera.focalLength
+        with Pool(processes=max_thread) as pool:
+            self.setStatusBarMessage(
+                "Rendering... | Using " + str(max_thread) + " workers"
+            )
+            self.updateBuffer()
+            arg_list = []
+            for i in range(0, max_thread):
+                y0 = i * height_per_thread
+                y1 = y0 + height_per_thread
+                if i == max_thread - 1:
+                    y1 = self.height
+                args = (y0, y1, self.width, scene_shared, camera_shared, self.height)
+                arg_list.append(args)
+            for res in pool.imap(render_task_wrapper, arg_list):
+                # TODO Implement a timer function to handle interrups
+                print("Updating Buffer...")
+                result = res[0]
+                idx = 0
+                for y in range(res[1], res[2]):
+                    y = y - res[1]
+                    for x in range(0, self.width):
+                        self.rendererWidget.imgBuffer.setPixelColor(
+                            x,
+                            y + res[1],
+                            QColor(
+                                result[idx],
+                                result[idx + 1],
+                                result[idx + 2],
+                            ),
+                        )
+                        idx += 3
+                    self.updateBuffer()
+        end = time.time()
+        self.printCumulativeTime(end - start)
 
-	def updateBuffer(self):
-		self.paintWidget.update()
+    def updateBuffer(self):
+        self.rendererWidget.update()
+        qApp.processEvents()
 
+    def printCumulativeTime(self, time):
+        print("Cumulative time: ", time)
+        self.setStatusBarMessage(
+            "Ready... | Last Render Time: " + str(time) + " seconds"
+        )
 
 if __name__ == "__main__":
-	# setup a QApplication
-	qApp = QApplication(sys.argv)
-	qApp.setOrganizationName("CENG488")
-	qApp.setOrganizationDomain("cavevfx.com")
-	qApp.setApplicationName("PyTrace")
+    # setup a QApplication
+    qApp = QApplication(sys.argv)
+    qApp.setOrganizationName("CENG488")
+    qApp.setOrganizationDomain("cavevfx.com")
+    qApp.setApplicationName("PyTrace")
+    print("PyTrace is starting...")
 
-	# setup main ui
-	width = 900
-	height = 900
-	mainWindow = PyTraceMainWindow(qApp, width, height)
-	mainWindow.setupUi()
-	mainWindow.show()
+    # setup a scene
+    sceneParser = SceneParser(SCENE_FILE)
+    sceneParser.parseScene()
+    scene = Scene()
+    camera = Camera(
+        sceneParser.camera["posX"],
+        sceneParser.camera["posY"],
+        sceneParser.camera["posZ"],
+        sceneParser.camera["focalLength"],
+    )
+    for obj in sceneParser.procedural.objects:
+        scene.addNode(obj)
 
-	# an example of writing to buffer
-	mainTimer = QTimer()
-	mainTimer.timeout.connect(mainWindow.timerBuffer)
-	mainTimer.start(2000)
+    for obj in sceneParser.objects:
+        scene.addNode(obj)
 
-	# enter event loop
-	sys.exit(qApp.exec_())
+    for obj in sceneParser.lights:
+        scene.addNode(obj)
+
+    # setup main ui
+    width = 900
+    height = 900
+    mainWindow = PyTraceMainWindow(qApp, width, height, scene, camera)
+    mainWindow.setupUi()
+    mainWindow.show()
+
+    # Create a render event and handler
+    renderEvent = RenderEvent()
+    renderEventHandler = RenderEventHandler(mainWindow)
+
+    # Handle the render event whenever the camera changes
+    camera.cameraMovedSignal.connect(
+        lambda: qApp.postEvent(renderEventHandler, renderEvent)
+    )
+
+    # Start rendering when the application starts
+    QTimer.singleShot(0, lambda: qApp.postEvent(renderEventHandler, renderEvent))
+
+    # enter event loop
+    sys.exit(qApp.exec_())
